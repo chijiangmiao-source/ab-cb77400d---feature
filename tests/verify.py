@@ -26,7 +26,7 @@ stages: list[tuple[str, list[str], dict[str, str]]] = []
 
 stages.append((
     "solver unit tests",
-    [PYTHON, "-u", str(TESTS / "harness.py"), "test_solver"],
+    [PYTHON, "-u", str(TESTS / "harness.py"), "test_solver", "test_jobs"],
     {"PYTHONPATH": str(ROOT)},
 ))
 stages.append((
@@ -40,6 +40,11 @@ env.setdefault("AUDIT_BASE_URL", "http://api:8080")
 stages.append((
     "HTTP smoke tests",
     [PYTHON, "-u", str(TESTS / "smoke_http.py")],
+    env,
+))
+stages.append((
+    "async job smoke tests (submit/poll, idempotency, restart recovery)",
+    [PYTHON, "-u", str(TESTS / "smoke_jobs.py")],
     env,
 ))
 

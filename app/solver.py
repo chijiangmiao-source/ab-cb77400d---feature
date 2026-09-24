@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import os
 import subprocess
+from typing import Any
 
 from .errors import TopologyError
-from .validation import Edge, Problem
+from .validation import Edge, Problem, parse_problem
 
 
 class _DSU:
@@ -225,4 +226,29 @@ def build_adjacency(
             )
         ]
         for label in sorted(adj)
+    }
+
+
+def solve_payload(payload: Any) -> dict[str, Any]:
+    """Validate a raw audit payload, solve it and build the response body.
+
+    Shared by the synchronous endpoint and the asynchronous job worker, so a
+    succeeded job returns exactly the document ``POST /api/audit`` would have
+    produced for the same payload.
+    """
+    problem = parse_problem(payload)
+    cost, selected, edge_ids = solve(problem)
+    return {
+        "cost": cost,
+        "edge_set": list(edge_ids),
+        "edges": [
+            {
+                "id": e.id,
+                "source": problem.nodes[e.source],
+                "target": problem.nodes[e.target],
+                "cost": e.cost,
+            }
+            for e in sorted(selected, key=lambda e: e.id)
+        ],
+        "adjacency": build_adjacency(problem.nodes, selected),
     }

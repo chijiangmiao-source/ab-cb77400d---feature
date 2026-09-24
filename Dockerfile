@@ -29,6 +29,7 @@ COPY app/ /app/app/
 COPY tests/ /app/tests/
 
 RUN chmod 0555 /app/core/steiner \
+    && mkdir -p /app/data \
     && chown -R audit:audit /app
 
 USER audit
