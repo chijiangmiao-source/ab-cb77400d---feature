@@ -2,10 +2,13 @@
 """One-shot verification entrypoint for the `verify` compose service.
 
 Runs, in order:
-  1. solver/validation unit tests (tests/test_solver.py),
+  1. solver/validation/job-store unit tests (tests/test_solver.py and
+     tests/test_jobs.py),
   2. build-artifact checks (tests/check_artifacts.py),
   3. HTTP smoke tests against the running API (tests/smoke_http.py),
-     including canonical tie arbitration and infeasibility boundaries.
+     including canonical tie arbitration and infeasibility boundaries,
+  4. async job HTTP smoke tests (tests/smoke_jobs.py): submit/poll
+     lifecycle, idempotent replay, conflict rejection, failed jobs.
 
 The process prints one summary block and exits non-zero if any stage fails,
 so Compose marks the run by its exit code.
@@ -25,8 +28,8 @@ PYTHON = sys.executable
 stages: list[tuple[str, list[str], dict[str, str]]] = []
 
 stages.append((
-    "solver unit tests",
-    [PYTHON, "-u", str(TESTS / "harness.py"), "test_solver"],
+    "solver and job unit tests",
+    [PYTHON, "-u", str(TESTS / "harness.py"), "test_solver", "test_jobs"],
     {"PYTHONPATH": str(ROOT)},
 ))
 stages.append((
@@ -40,6 +43,11 @@ env.setdefault("AUDIT_BASE_URL", "http://api:8080")
 stages.append((
     "HTTP smoke tests",
     [PYTHON, "-u", str(TESTS / "smoke_http.py")],
+    env,
+))
+stages.append((
+    "async job HTTP smoke tests",
+    [PYTHON, "-u", str(TESTS / "smoke_jobs.py")],
     env,
 ))
 

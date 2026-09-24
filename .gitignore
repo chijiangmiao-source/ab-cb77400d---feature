@@ -17,3 +17,6 @@ __pycache__/
 # Native core build output (built inside the Docker image; rebuilt locally
 # with: gcc -O2 -std=c11 -o core/steiner core/steiner.c)
 core/steiner
+
+# Local async-job store (in Docker this lives on the audit-jobs volume)
+data/

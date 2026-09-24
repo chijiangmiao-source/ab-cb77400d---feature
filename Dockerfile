@@ -17,7 +17,8 @@ FROM python:3.11-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     AUDIT_HOST=0.0.0.0 \
-    AUDIT_PORT=8080
+    AUDIT_PORT=8080 \
+    AUDIT_JOB_DB=/app/data/jobs.sqlite3
 
 # Non-root user.
 RUN useradd --create-home --uid 10001 audit
@@ -28,7 +29,10 @@ COPY core/steiner.c /app/core/steiner.c
 COPY app/ /app/app/
 COPY tests/ /app/tests/
 
+# /app/data holds the durable async-job store (SQLite); Compose mounts a
+# named volume there so queued/running jobs survive restarts.
 RUN chmod 0555 /app/core/steiner \
+    && mkdir -p /app/data \
     && chown -R audit:audit /app
 
 USER audit

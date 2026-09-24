@@ -9,18 +9,21 @@
 - 求解内核：C11 实现的终端子集动态规划（Dreyfus–Wagner）、节点汇聚合并
   （并查集）与多源最短路闭包（多源 Dijkstra）；不枚举边集、不调用通用
   优化器。
+- 异步作业：现场工程师可先提交规模较大的复核取得可追踪的作业标识，再轮询
+  最终结论；提交幂等（相同操作标识 + 完全相同载荷永远指向同一作业），作业
+  持久化于 SQLite 卷，进程崩溃后仅从可恢复状态重算，绝不发布部分结果。
 - 交付：`Dockerfile` 多阶段构建；`compose.yml` 暴露可配置宿主机端口、
   以 `/healthz` 做健康检查，并运行一次性 `verify` 服务。
 
 ## 目录结构
 
 ```
-app/            HTTP 服务、请求校验、求解器 Python 前端
+app/            HTTP 服务、请求校验、求解器 Python 前端、异步作业存储与执行器
 core/steiner.c  原生求解内核（终端子集 DP + 汇聚合并 + 多源最短路闭包）
-tests/          单元测试、构建产物检查、HTTP 冒烟、verify 总入口
-scripts/        离线暴力交叉验证脚本（不属于服务）
+tests/          单元测试、构建产物检查、HTTP 冒烟（同步 + 异步）、verify 总入口
+scripts/        离线暴力交叉验证脚本、Compose 端到端验收脚本（不属于服务）
 Dockerfile      gcc 编译内核 + slim 运行镜像
-compose.yml     api 服务 + 一次性 verify 服务
+compose.yml     api 服务（含作业持久卷）+ 一次性 verify 服务
 ```
 
 ## 快速开始（Docker Compose）
@@ -34,8 +37,9 @@ AUDIT_HOST_PORT=9090 docker compose up \
 
 - `api` 在容器内监听 8080，宿主机通过 `${AUDIT_HOST_PORT:-8080}` 访问；
   Compose 健康检查周期性请求 `GET /healthz`。
-- `verify` 等 `api` 健康后运行一次：求解器单元测试 → 构建产物检查 →
-  HTTP 冒烟（含并列裁决与无解边界），随后以退出码报告结果（0 成功）。
+- `verify` 等 `api` 健康后运行一次：求解器与作业存储单元测试 → 构建产物
+  检查 → HTTP 冒烟（含并列裁决、无解边界与异步作业全流程），随后以退出码
+  报告结果（0 成功）。
 
 仅启动 API：
 
@@ -126,6 +130,71 @@ JSON Pointer 风格定位（如 `/edges/3/cost`、`/endpoints/1`）。
 | 405/404/411/413/500 | 对应语义码 | 方法错误、路径不存在、缺少长度、载荷过大、内部错误 |
 
 每次请求都重新构建问题并启动一次独立内核进程，失败不会残留任何状态。
+
+## 异步作业 API（大规模复核）
+
+规模较大的校准子网复核可以先提交、再轮询结论：连接中断后凭操作标识重试
+即可，绝不会重复发起同一次昂贵计算。
+
+### `POST /api/jobs`
+
+```json
+{
+  "operation_id": "review-2026-09-24-0007",
+  "payload": { "nodes": ["A", "B"], "edges": [{"id": "e1", "source": "A", "target": "B", "cost": 3}], "endpoints": ["A", "B"] }
+}
+```
+
+- `operation_id`：客户端提供的稳定操作标识（ASCII 字母数字开头，可含
+  `. _ ~ -`，最长 128 字符）；`payload`：与 `POST /api/audit` 完全相同的
+  审计载荷。
+- 服务**先完整校验载荷**（错误体与同步入口一致，pointer 相对于审计载荷），
+  校验通过才持久化作业并异步调用既有求解内核。
+- 首次创建返回 `202` 与作业文档（`status` 为 `queued`/`running`）。
+- **幂等**：相同 `operation_id` + 完全相同载荷（键序无关、数组顺序敏感）
+  在并发提交、响应丢失后的重试、服务重启后都指向同一作业，返回 `200` 与
+  该作业当前状态；相同标识但载荷不同返回 `409 OPERATION_CONFLICT`，且原
+  记录不被覆盖。
+
+### `GET /api/jobs/{operation_id}`
+
+返回四种状态之一：
+
+```json
+{"operation_id": "review-2026-09-24-0007", "status": "queued|running"}
+{"operation_id": "review-2026-09-24-0007", "status": "succeeded", "result": { "cost": 3, "edge_set": ["e1"], "edges": [...], "adjacency": {...} }}
+{"operation_id": "review-2026-09-24-0007", "status": "failed", "error": {"code": "ENDPOINTS_UNCONNECTED", "message": "...", "pointer": "/endpoints/1", "components": [["A"], ["C"]]}}
+```
+
+- `result` 与 `POST /api/audit` 的成功响应**完全一致**；`error` 与同步入口
+  的错误体（400/422）完全一致。
+- 中间态（`queued`/`running`）绝不携带 `result`/`error` 字段；未知标识返回
+  `404 JOB_NOT_FOUND`。
+
+### 持久化与崩溃恢复
+
+- 作业记录持久化于 SQLite（`AUDIT_JOB_DB`，容器内默认
+  `/app/data/jobs.sqlite3`，Compose 挂载命名卷 `audit-jobs`），服务重启后
+  作业、结论与幂等冲突判定全部保留。
+- 结果通过**单条原子 UPDATE** 与状态一并发布；进程在写入结果前终止时，该
+  作业仍是 `queued`/`running`，重启后仅从持久化的载荷重新计算——绝不发布
+  半份边集或部分邻接表；`succeeded`/`failed` 为终态，绝不重算，旧失败绝不
+  会被误作新成功。
+- `AUDIT_JOB_DELAY_SECONDS`（默认 0）：测试/演示钩子，在作业处于 `running`
+  时人为延迟，为崩溃恢复验收提供稳定的终止窗口。
+
+## Compose 端到端验收
+
+`verify` 服务覆盖单元测试与 HTTP 冒烟（含异步提交/轮询/幂等/冲突）。在此
+之上，`scripts/acceptance_jobs.py` 驱动真实 Compose 部署完成完整验收：
+实际提交作业、并发重复提交、幂等冲突复核，然后**在计算中途 SIGKILL 容器、
+重启服务并轮询该作业直至成功**（结果与同步入口逐项一致），最后复核已完成
+作业与冲突判定在重启后仍然有效、同步入口语义未变：
+
+```bash
+AUDIT_HOST_PORT=9090 docker compose up -d --build api
+AUDIT_HOST_PORT=9090 python3 scripts/acceptance_jobs.py
+```
 
 ## 算法与并列裁决
 

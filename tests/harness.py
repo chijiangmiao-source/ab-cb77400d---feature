@@ -42,17 +42,28 @@ def _run_class(cls: type) -> tuple[int, int]:
     passed = failed = 0
     for name, fn in methods:
         setup = getattr(case, "setup_method", None)
+        teardown = getattr(case, "teardown_method", None)
+        ok = True
         try:
             if setup is not None:
                 setup(name)
             fn()
         except Exception:  # noqa: BLE001 - report every failure
-            failed += 1
+            ok = False
             print(f"FAIL  {cls.__name__}.{name}")
             traceback.print_exc(file=sys.stdout)
-        else:
+        if teardown is not None:
+            try:
+                teardown(name)
+            except Exception:  # noqa: BLE001 - a failing teardown fails the test
+                ok = False
+                print(f"FAIL  {cls.__name__}.{name} (teardown)")
+                traceback.print_exc(file=sys.stdout)
+        if ok:
             passed += 1
             print(f"pass  {cls.__name__}.{name}")
+        else:
+            failed += 1
     return passed, failed
 
 

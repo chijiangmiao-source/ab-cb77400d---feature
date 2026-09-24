@@ -61,6 +61,8 @@ def main() -> int:
 
     print("[artifact] python package import")
     try:
+        import app.audit  # noqa: F401
+        import app.jobs  # noqa: F401
         import app.server  # noqa: F401
         import app.solver  # noqa: F401
         import app.validation  # noqa: F401

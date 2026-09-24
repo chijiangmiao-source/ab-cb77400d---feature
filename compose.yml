@@ -3,15 +3,20 @@
 # Services:
 #   api     -- the HTTP solver; the host port is configurable via
 #              AUDIT_HOST_PORT (default 8080) and health is probed on
-#              GET /healthz.
-#   verify  -- one-shot verification run: solver unit tests, build artifact
-#              checks and HTTP smoke tests (including canonical tie
-#              arbitration and infeasibility boundaries). It exits 0 on
-#              success and non-zero on any failure, then stops.
+#              GET /healthz. Async audit jobs are persisted in the
+#              `audit-jobs` volume so they survive restarts.
+#   verify  -- one-shot verification run: solver/job unit tests, build
+#              artifact checks and HTTP smoke tests (including canonical tie
+#              arbitration, infeasibility boundaries and the async job API).
+#              It exits 0 on success and non-zero on any failure, then stops.
 #
 # Typical use:
 #   AUDIT_HOST_PORT=9090 docker compose build
 #   AUDIT_HOST_PORT=9090 docker compose up --abort-on-container-exit --exit-code-from verify
+#
+# Full async acceptance (submit -> hard-kill mid-computation -> restart ->
+# poll the conclusion; idempotency conflicts; sync endpoint regression):
+#   python3 scripts/acceptance_jobs.py
 
 services:
   api:
@@ -22,6 +27,14 @@ services:
     environment:
       AUDIT_HOST: 0.0.0.0
       AUDIT_PORT: "8080"
+      AUDIT_JOB_DB: /app/data/jobs.sqlite3
+      # Test/demo hook (normally 0): artificial delay while a job is in
+      # `running`, giving the crash-recovery acceptance a reliable kill
+      # window. Override with e.g. AUDIT_JOB_DELAY_SECONDS=3 docker compose up -d api
+      AUDIT_JOB_DELAY_SECONDS: "${AUDIT_JOB_DELAY_SECONDS:-0}"
+    volumes:
+      # Durable async-job store: queued/running jobs survive restarts.
+      - audit-jobs:/app/data
     ports:
       # Host-side port is configurable; container port stays 8080.
       - "${AUDIT_HOST_PORT:-8080}:8080"
@@ -52,3 +65,6 @@ services:
       api:
         condition: service_healthy
     restart: "no"
+
+volumes:
+  audit-jobs:
